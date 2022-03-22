@@ -200,6 +200,26 @@ class ORFactor(LogicalFactor):
     pass
 
 
+@dataclass(frozen=True, eq=False)
+class ANDFactor(LogicalFactor):
+    """An AND factor of the form
+    p1    p2    p3   p4
+    ||    ||    ||    ||
+     \\   ||    ||   //
+       \\  \\  //  //
+             F
+            ||
+             c
+    where p1... are the parents and c is the child.
+
+    An OR factor is defined as:
+    F(p1, p2, ..., pn, c) = 0 <=> c = AND(p1, p2, ..., pn)
+    F(p1, p2, ..., pn, c) = -inf o.w.
+    """
+
+    pass
+
+
 @functools.partial(jax.jit, static_argnames=("temperature"))
 def pass_OR_fac_to_var_messages(
     vtof_msgs: jnp.ndarray,
@@ -306,6 +326,135 @@ def pass_OR_fac_to_var_messages(
             sigmoid(g_sum_log_sig_parents_minus_id / temperature)
             + sigmoid(-g_sum_log_sig_parents_minus_id / temperature)
             * jnp.exp(-children_tof_msgs[factor_indices] / temperature)
+        )
+
+        # Outgoing messages to children variables
+        children_msgs = g(sum_log_sig_parents_tof_msgs)
+
+    # Special case: factors with a single parent
+    num_parents = jnp.bincount(factor_indices, length=num_factors)
+    first_elements = jnp.concatenate(
+        [jnp.zeros(1, dtype=int), jnp.cumsum(num_parents)]
+    )[:-1]
+    parents_msgs = parents_msgs.at[first_elements].set(
+        jnp.where(num_parents == 1, children_tof_msgs, parents_msgs[first_elements]),
+    )
+
+    ftov_msgs = jnp.zeros_like(vtof_msgs)
+    ftov_msgs = ftov_msgs.at[parents_edge_states[..., 1] + 1].set(parents_msgs)
+    ftov_msgs = ftov_msgs.at[children_edge_states + 1].set(children_msgs)
+    return ftov_msgs
+
+
+@functools.partial(jax.jit, static_argnames=("temperature"))
+def pass_AND_fac_to_var_messages(
+    vtof_msgs: jnp.ndarray,
+    parents_edge_states: jnp.ndarray,
+    children_edge_states: jnp.ndarray,
+    temperature: float,
+    log_potentials: Optional[jnp.ndarray] = None,
+) -> jnp.ndarray:
+
+    """Passes messages from AND Factors to Variables.
+
+    Args:
+        vtof_msgs: Array of shape (num_edge_state,). This holds all the flattened variable to all the factor messages,
+            taking into account all the enumeration and logical factors.
+        parents_edge_states: Array of shape (num_parents, 2)
+            parents_edge_states[ii, 0] contains the global AND factor index,
+            which only takes into account all the AND factors
+            parents_edge_states[ii, 1] contains the message index of the parent variable's state 0,
+            which takes into account all the enumeration and logical factors
+            The parent variable's state 1 is parents_edge_states[ii, 2] + 1
+        children_edge_states: Array of shape (num_factors,)
+            children_edge_states[ii] contains the message index of the child variable's state 0,
+            which takes into account all the enumeration and logical factors
+            The child variable's state 1 is children_edge_states[ii, 1] + 1
+        temperature: Temperature for loopy belief propagation.
+            1.0 corresponds to sum-product, 0.0 corresponds to max-product.
+
+    Returns:
+        Array of shape (num_edge_state,). This holds all the flattened factor to variable messages.
+    """
+    num_factors = children_edge_states.shape[0]
+
+    factor_indices = parents_edge_states[..., 0]
+
+    parents_tof_msgs = (
+        vtof_msgs[parents_edge_states[..., 1] + 1]
+        - vtof_msgs[parents_edge_states[..., 1]]
+    )
+    children_tof_msgs = (
+        vtof_msgs[children_edge_states + 1] - vtof_msgs[children_edge_states]
+    )
+
+    # We treat the max-product case separately.
+    if temperature == 0.0:
+        # Get the first and second argmins for the incoming parents messages of each factor
+        _, first_parents_argmins = bp_utils.get_maxes_and_argmaxes(
+            -parents_tof_msgs, factor_indices, num_factors
+        )
+        _, second_parents_argmins = bp_utils.get_maxes_and_argmaxes(
+            -parents_tof_msgs.at[first_parents_argmins].set(-bp_utils.NEG_INF),
+            factor_indices,
+            num_factors,
+        )
+
+        parents_tof_msgs_neg = jnp.minimum(0.0, parents_tof_msgs)
+        sum_parents_tof_msgs_neg = (
+            jnp.full(shape=(num_factors,), fill_value=0.0)
+            .at[factor_indices]
+            .add(parents_tof_msgs_neg)
+        )
+
+        # Outgoing messages to parents variables
+        # See https://arxiv.org/pdf/2111.02458.pdf, Appendix C.3
+        parents_msgs = jnp.maximum(
+            children_tof_msgs[factor_indices]
+            + sum_parents_tof_msgs_neg[factor_indices]
+            - parents_tof_msgs_neg,
+            jnp.minimum(0.0, -parents_tof_msgs[first_parents_argmins][factor_indices]),
+        )
+        parents_msgs = parents_msgs.at[first_parents_argmins].set(
+            jnp.maximum(
+                children_tof_msgs
+                + sum_parents_tof_msgs_neg
+                - parents_tof_msgs_neg[first_parents_argmins],
+                jnp.minimum(0.0, -parents_tof_msgs[second_parents_argmins]),
+            )
+        )
+
+        # Outgoing messages to children variables
+        children_msgs = sum_parents_tof_msgs_neg + jnp.maximum(
+            0.0, parents_tof_msgs[first_parents_argmins]
+        )
+    else:
+
+        def g(x):
+            # assert jnp.all(x >= 0)
+            return jnp.where(
+                x == 0.0,
+                0.0,
+                x - temperature * jnp.log(1.0 - jnp.exp(x / temperature)),
+            )
+
+        log_sig_parents_tof_msgs = temperature * log_sigmoid(
+            parents_tof_msgs / temperature
+        )
+        sum_log_sig_parents_tof_msgs = (
+            jnp.full(shape=(num_factors,), fill_value=0.0)
+            .at[factor_indices]
+            .add(log_sig_parents_tof_msgs)
+        )
+        g_sum_log_sig_parents_minus_id = g(
+            sum_log_sig_parents_tof_msgs[factor_indices] - log_sig_parents_tof_msgs
+        )
+
+        # Outgoing messages to parents variables
+        parents_msgs = temperature * jnp.log(
+            sigmoid(-g_sum_log_sig_parents_minus_id / temperature)
+            + sigmoid(g_sum_log_sig_parents_minus_id / temperature)
+            * jnp.exp(children_tof_msgs[factor_indices] / temperature)
         )
 
         # Outgoing messages to children variables

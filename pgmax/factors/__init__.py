@@ -13,5 +13,6 @@ FAC_TO_VAR_UPDATES: OrderedDict[
     [
         (enumeration.EnumerationFactor, enumeration.pass_enum_fac_to_var_messages),
         (logical.ORFactor, logical.pass_OR_fac_to_var_messages),
+        (logical.ANDFactor, logical.pass_AND_fac_to_var_messages),
     ]
 )
