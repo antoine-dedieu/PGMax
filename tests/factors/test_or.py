@@ -132,8 +132,8 @@ def test_run_bp_with_OR_factors():
                     )
 
         # Run inference
-        run_bp1, _, get_beliefs1 = graph.BP(fg1.bp_state, 5, temperature)
-        run_bp2, _, get_beliefs2 = graph.BP(fg2.bp_state, 5, temperature)
+        run_bp1, _, get_beliefs1 = graph.BP(fg1.bp_state, 100, temperature)
+        run_bp2, _, get_beliefs2 = graph.BP(fg2.bp_state, 100, temperature)
 
         evidence_updates = {
             "parents": jax.device_put(np.random.gumbel(size=(sum(num_parents), 2))),
@@ -280,8 +280,8 @@ def test_run_bp_with_AND_factors():
                     )
 
         # Run inference
-        run_bp1, _, get_beliefs1 = graph.BP(fg1.bp_state, 1, temperature)
-        run_bp2, _, get_beliefs2 = graph.BP(fg2.bp_state, 1, temperature)
+        run_bp1, _, get_beliefs1 = graph.BP(fg1.bp_state, 100, temperature)
+        run_bp2, _, get_beliefs2 = graph.BP(fg2.bp_state, 100, temperature)
 
         evidence_updates = {
             "parents": jax.device_put(np.random.gumbel(size=(sum(num_parents), 2))),
