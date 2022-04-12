@@ -108,6 +108,10 @@ _ = plot_images(W_gt[0], nr=1)
 # See Section 5.6 of the [PMP paper](https://proceedings.neurips.cc/paper/2021/hash/07b1c04a30f798b5506c1ec5acfb9031-Abstract.html) for more details.
 
 # %%
+import time
+
+start = time.time()
+
 # The dimensions of W used for the generation of X were (4, 5, 5) but we set them to (5, 6, 6)
 # to simulate a more realistic scenario in which we do not know their ground truth values
 n_feat, feat_height, feat_width = 5, 6, 6
@@ -132,13 +136,16 @@ SW = vgroup.NDVariableArray(
 
 # Binary images obtained by convolution
 X = vgroup.NDVariableArray(num_states=2, shape=X_gt.shape)
+print("Time", time.time() - start)
 
 # %% [markdown]
 # For computation efficiency, we add large FactorGroups via `fg.add_factor_group` instead of adding individual Factors
 
 # %%
+start = time.time()
 # Factor graph
 fg = graph.FactorGraph(variables=dict(S=S, W=W, SW=SW, X=X))
+print("Time", time.time() - start)
 
 # Define the ANDFactors
 variable_names_for_ANDFactors = []
@@ -180,12 +187,14 @@ for idx_img in tqdm(range(n_images)):
 
                             X_var = (idx_img, idx_chan, idx_img_height, idx_img_width)
                             variable_names_for_ORFactors_dict[X_var].append(SW_var)
+print("Time", time.time() - start)
 
 # Add ANDFactorGroup, which is computationally efficient
 fg.add_factor_group(
     factory=logical.ANDFactorGroup,
     variable_names_for_factors=variable_names_for_ANDFactors,
 )
+print("Time", time.time() - start)
 
 # Define the ORFactors
 variable_names_for_ORFactors = [
@@ -198,6 +207,7 @@ fg.add_factor_group(
     factory=logical.ORFactorGroup,
     variable_names_for_factors=variable_names_for_ORFactors,
 )
+print("Time", time.time() - start)
 
 for factor_type, factor_groups in fg.factor_groups.items():
     if len(factor_groups) > 0:
@@ -215,7 +225,9 @@ for factor_type, factor_groups in fg.factor_groups.items():
 # in the same manner does not change X, so this naturally results in multiple equivalent modes.
 
 # %%
+start = time.time()
 bp = graph.BP(fg.bp_state, temperature=0.0)
+print("Time", time.time() - start)
 
 # %% [markdown]
 # We first compute the evidence without perturbation, similar to the PMP paper.
@@ -243,6 +255,7 @@ uX[..., 0] = (2 * X_gt - 1) * logit(pX)
 np.random.seed(seed=40)
 n_samples = 4
 
+start = time.time()
 bp_arrays = jax.vmap(bp.init, in_axes=0, out_axes=0)(
     evidence_updates={
         "S": uS[None] + np.random.gumbel(size=(n_samples,) + uS.shape),
@@ -251,13 +264,16 @@ bp_arrays = jax.vmap(bp.init, in_axes=0, out_axes=0)(
         "X": uX[None] + np.zeros(shape=(n_samples,) + uX.shape),
     },
 )
+print("Time", time.time() - start)
 bp_arrays = jax.vmap(
     functools.partial(bp.run_bp, num_iters=100, damping=0.5),
     in_axes=0,
     out_axes=0,
 )(bp_arrays)
+print("Time", time.time() - start)
 beliefs = jax.vmap(bp.get_beliefs, in_axes=0, out_axes=0)(bp_arrays)
 map_states = graph.decode_map_states(beliefs)
+print("Time", time.time() - start)
 
 # %% [markdown]
 # Visualizing the MAP decoding, we see that we have 4 good random samples (one per row) from the posterior!
